@@ -119,6 +119,7 @@ public class AzureSecurityRealm extends SecurityRealm {
     private static final String CONVERTER_NODE_FROM_REQUEST = "fromrequest";
     private static final int CACHE_KEY_LOG_LENGTH = 8;
     private static final int NOT_FOUND = 404;
+    private static final int BAD_REQUEST = 400;
     public static final String CONVERTER_DISABLE_GRAPH_INTEGRATION = "disableGraphIntegration";
     public static final String CONVERTER_ENVIRONMENT_NAME = "environmentName";
 
@@ -184,11 +185,11 @@ public class AzureSecurityRealm extends SecurityRealm {
                 .build();
     }
 
-    private static OkHttpClient.Builder addProxyToHttpClientIfRequired(OkHttpClient.Builder builder) {
+    public static OkHttpClient.Builder addProxyToHttpClientIfRequired(OkHttpClient.Builder builder) {
         if (JenkinsJVM.isJenkinsJVM()) {
             ProxyConfiguration proxyConfiguration = Jenkins.get().getProxy();
             if (proxyConfiguration != null && StringUtils.isNotBlank(proxyConfiguration.getName())) {
-                Proxy proxy = proxyConfiguration.createProxy("https://graph.microsoft.com");
+                Proxy proxy = proxyConfiguration.createProxy("graph.microsoft.com");
 
                 builder = builder.proxy(proxy);
                 if (StringUtils.isNotBlank(proxyConfiguration.getUserName())) {
@@ -517,6 +518,14 @@ public class AzureSecurityRealm extends SecurityRealm {
                 } catch (GraphServiceException e) {
                     if (e.getResponseCode() == NOT_FOUND) {
                         return null;
+                    } else if (e.getResponseCode() == BAD_REQUEST) {
+                        if (LOGGER.isLoggable(Level.FINE)) {
+                            LOGGER.log(Level.FINE, "Failed to lookup user with userid '" + userId, e);
+                        } else {
+                            LOGGER.log(Level.WARNING, "Failed to lookup user with userid '" + userId + "'."
+                                    + " Enable 'Fine' Logging for more information.");
+                        }
+                        return null;
                     }
                     throw e;
                 }
@@ -701,7 +710,7 @@ public class AzureSecurityRealm extends SecurityRealm {
         public boolean process(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws IOException, ServletException {
             String pathInfo = request.getPathInfo();
-            if (pathInfo != null && (pathInfo.equals(CALLBACK_URL) || pathInfo.endsWith("GraphProxy/v1.0/$batch"))) {
+            if (pathInfo != null && pathInfo.equals(CALLBACK_URL)) {
                 chain.doFilter(request, response);
                 return true;
             }
