@@ -2,8 +2,8 @@
  * This handles the addition of new users/groups to the list.
  */
 Behaviour.specify(".azure-ad-add-button", 'AzureAdMatrixAuthorizationStrategy', 0, function(e) {
-    makeButton(e, function (e) {
-        var dataReference = e.target;
+    e.addEventListener('click', function(event) {
+        var dataReference = event.target;
         var dataTableId = dataReference.getAttribute('data-table-id');
         var master = document.getElementById(dataTableId);
         var table = master.parentNode;
@@ -11,11 +11,13 @@ Behaviour.specify(".azure-ad-add-button", 'AzureAdMatrixAuthorizationStrategy', 
         var nonGraphInput = document.getElementById(dataTableId + 'text')
         var selectedPeople = []
         var peoplePickerEnabled = true
+        var typeLabel
         if (nonGraphInput) {
             peoplePickerEnabled = false
             if (nonGraphInput.value) {
                 selectedPeople = [nonGraphInput.value]
             }
+            typeLabel = dataReference.getAttribute('data-type-label')
         } else {
           selectedPeople = document.querySelector('mgt-people-picker').selectedPeople;
         }
@@ -27,12 +29,25 @@ Behaviour.specify(".azure-ad-add-button", 'AzureAdMatrixAuthorizationStrategy', 
 
         selectedPeople.forEach(function(person) {
             var name = person
+            var type
             if (typeof person !== 'string') {
-                name = person.displayName + " (" + person.id + ")"
+                if (person.groupTypes) {
+                    name = person.displayName + " (" + person.id + ")"
+                    type = "GROUP"
+                    typeLabel = dataReference.getAttribute('data-type-group-label')
+                } else {
+                    name = person.id
+                    type = "USER"
+                    typeLabel = dataReference.getAttribute('data-type-user-label')
+                }
+            } else {
+                type = dataReference.getAttribute('data-type')
             }
 
-            if(findElementsBySelector(table,"TR").find(function(n){return n.getAttribute("name")=='['+name+']';})!=null) {
-                alert(dataReference.getAttribute('data-message-error') + ": " + name);
+            if (findElementsBySelector(table, "TR").find(function (n) {
+                return n.getAttribute("name") === '[' + type + ':' + name + ']';
+            }) != null) {
+                alert(dataReference.getAttribute(`data-message-${type.toLowerCase()}-error`) + ": " + name);
                 return;
             }
 
@@ -44,22 +59,35 @@ Behaviour.specify(".azure-ad-add-button", 'AzureAdMatrixAuthorizationStrategy', 
             copy.removeAttribute("id");
             copy.classList.remove("default-hidden");
             copy.firstChild.innerHTML = YAHOO.lang.escapeHTML(name); // TODO consider setting innerText
-            copy.setAttribute("name",'['+ name+']');
+            copy.setAttribute("name",'[' + type + ':' + name+']');
 
             for(var child = copy.firstChild; child !== null; child = child.nextSibling) {
                 if (child.hasAttribute('data-permission-id')) {
-                    child.setAttribute("data-tooltip-enabled", child.getAttribute("data-tooltip-enabled").replace("__SID__", name));
-                    child.setAttribute("data-tooltip-disabled", child.getAttribute("data-tooltip-disabled").replace("__SID__", name));
+                    child.setAttribute("data-tooltip-enabled", child.getAttribute("data-tooltip-enabled").replace("__SID__", name).replace("__TYPE__", typeLabel));
+                    child.setAttribute("data-tooltip-disabled", child.getAttribute("data-tooltip-disabled").replace("__SID__", name).replace("__TYPE__", typeLabel));
                 }
             }
-            findElementsBySelector(copy, ".stop img").each(function(item) {
-                item.setAttribute("title", item.getAttribute("title").replace("__SID__", name));
+
+            findElementsBySelector(copy, ".stop a").forEach(function(item) {
+                let oldTitle = item.getAttribute("title");
+                if (oldTitle !== null) {
+                    item.setAttribute("title", oldTitle.replace("__SID__", name).replace("__TYPE__", typeLabel));
+                }
+
+                item.setAttribute('data-html-tooltip', item.getAttribute('data-html-tooltip').replace("__SID__", name).replace("__TYPE__", typeLabel));
             });
-            findElementsBySelector(copy, "input[type=checkbox]").each(function(item) {
-                item.setAttribute("title", item.getAttribute("title").replace("__SID__", name));
+
+
+            findElementsBySelector(copy, "input[type=checkbox]").forEach(function(item) {
+                const tooltip = item.getAttribute('data-html-tooltip');
+                if (tooltip) {
+                    item.setAttribute('data-html-tooltip', tooltip.replace("__SID__", name).replace("__TYPE__", typeLabel));
+                } else {
+                    item.setAttribute("title", item.getAttribute("title").replace("__SID__", name).replace("__TYPE__", typeLabel));
+                }
             });
             table.appendChild(copy);
-            Behaviour.applySubtree(findAncestor(table,"TABLE"),true);
+            Behaviour.applySubtree(table.closest("TABLE"),true);
         })
 
 
@@ -76,7 +104,7 @@ Behaviour.specify(".azure-ad-add-button", 'AzureAdMatrixAuthorizationStrategy', 
  */
 Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.remove", 'AzureAdMatrixAuthorizationStrategy', 0, function(e) {
     e.onclick = function() {
-        var tr = findAncestor(this,"TR");
+        var tr = this.closest("TR");
         tr.parentNode.removeChild(tr);
         return false;
     }
@@ -88,12 +116,12 @@ Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.remove"
  */
 Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.selectall", 'AzureAdMatrixAuthorizationStrategy', 0, function(e) {
     e.onclick = function() {
-        var tr = findAncestor(this,"TR");
+        var tr = this.closest("TR");
         var inputs = tr.getElementsByTagName("INPUT");
         for(var i=0; i < inputs.length; i++){
             if(inputs[i].type == "checkbox") inputs[i].checked = true;
         }
-        Behaviour.applySubtree(findAncestor(this,"TABLE"),true);
+        Behaviour.applySubtree(this.closest("TABLE"),true);
         return false;
     };
     e = null; // avoid memory leak
@@ -104,12 +132,12 @@ Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.selecta
  */
 Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.unselectall", 'AzureAdMatrixAuthorizationStrategy', 0, function(e) {
     e.onclick = function() {
-        var tr = findAncestor(this,"TR");
+        var tr = this.closest("TR");
         var inputs = tr.getElementsByTagName("INPUT");
         for(var i=0; i < inputs.length; i++){
             if(inputs[i].type == "checkbox") inputs[i].checked = false;
         }
-        Behaviour.applySubtree(findAncestor(this,"TABLE"),true);
+        Behaviour.applySubtree(this.closest("TABLE"),true);
         return false;
     };
     e = null; // avoid memory leak
@@ -119,11 +147,13 @@ Behaviour.specify(".global-matrix-authorization-strategy-table TD.stop A.unselec
  * Whenever permission assignments change, this ensures that implied permissions get their checkboxes disabled.
  */
 Behaviour.specify(".global-matrix-authorization-strategy-table td input", 'AzureAdMatrixAuthorizationStrategy', 0, function(e) {
-    var impliedByString = findAncestor(e, "TD").getAttribute('data-implied-by-list');
+    var impliedByString = e.closest("TD").getAttribute('data-implied-by-list');
     var impliedByList = impliedByString.split(" ");
-    var tr = findAncestor(e,"TR");
+    var tr = e.closest("TR");
     e.disabled = false;
-    e.setAttribute('tooltip', YAHOO.lang.escapeHTML(findAncestor(e, "TD").getAttribute('data-tooltip-enabled')));
+    var enabledTooltip = YAHOO.lang.escapeHTML(e.closest("TD").getAttribute('data-tooltip-enabled'));
+    e.setAttribute('data-html-tooltip', enabledTooltip);
+    e.nextSibling.setAttribute('data-html-tooltip', enabledTooltip); // 2.335+
 
     for (var i = 0; i < impliedByList.length; i++) {
         var permissionId = impliedByList[i];
@@ -131,12 +161,13 @@ Behaviour.specify(".global-matrix-authorization-strategy-table td input", 'Azure
         if (reference !== null) {
             if (reference.checked) {
                 e.disabled = true;
-                e.setAttribute('tooltip', YAHOO.lang.escapeHTML(findAncestor(e, "TD").getAttribute('data-tooltip-disabled')));
+                var tooltip = YAHOO.lang.escapeHTML(e.closest("TD").getAttribute('data-tooltip-disabled'));
+                e.nextSibling.setAttribute('data-html-tooltip', tooltip);
             }
         }
     }
     e.onchange = function() {
-        Behaviour.applySubtree(findAncestor(this,"TABLE"),true);
+        Behaviour.applySubtree(this.closest("TABLE"),true);
         return true;
     };
     e = null; // avoid memory leak

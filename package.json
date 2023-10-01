@@ -6,8 +6,8 @@
   "scripts": {
     "mvnbuild": "npm run build",
     "mvntest": "npm run test",
-    "build": "webpack --mode production",
-    "build:dev": "webpack --mode development --watch",
+    "build": "webpack --config webpack.prod.js",
+    "build:dev": "webpack --config webpack.dev.js --watch",
     "test": "echo \"Error: no test specified\" && exit 0"
   },
   "repository": {
@@ -21,15 +21,16 @@
   },
   "homepage": "https://github.com/jenkinsci/azure-ad-plugin#readme",
   "devDependencies": {
-    "source-map-loader": "^3.0.0",
-    "ts-loader": "^9.2.3",
-    "typescript": "^4.3.2",
-    "webpack": "^5.38.1",
-    "webpack-cli": "^4.7.2"
+    "source-map-loader": "^4.0.1",
+    "ts-loader": "^9.4.2",
+    "typescript": "^5.0.0",
+    "webpack": "^5.76.3",
+    "webpack-cli": "^5.0.1",
+    "webpack-merge": "^5.8.0"
   },
   "dependencies": {
-    "@microsoft/mgt-components": "^2.2.0",
-    "@microsoft/mgt-element": "^2.2.0",
-    "@microsoft/mgt-proxy-provider": "^2.2.0"
+    "@microsoft/mgt-components": "^3.0.0",
+    "@microsoft/mgt-element": "^3.0.0",
+    "@microsoft/mgt-proxy-provider": "^3.0.0"
   }
 }

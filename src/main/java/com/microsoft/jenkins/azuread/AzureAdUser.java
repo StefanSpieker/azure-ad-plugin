@@ -117,21 +117,21 @@ public final class AzureAdUser implements UserDetails {
         return user;
     }
 
-    public void setAuthorities(List<AzureAdGroup> groups) {
+    public void setAuthorities(List<AzureAdGroup> groups, String userPrincipalName) {
         List<GrantedAuthority> newAuthorities = new ArrayList<>();
         if (!groups.isEmpty()) {
             for (AzureAdGroup group : groups) {
                 newAuthorities.add(group);
-                newAuthorities.add(new SimpleGrantedAuthority(group.getObjectId()));
+                newAuthorities.add(new SimpleGrantedAuthority(group.getGroupName()));
             }
         } else {
             for (String groupOID : groupOIDs) {
                 newAuthorities.add(new AzureAdGroup(groupOID, groupOID));
-                newAuthorities.add(new SimpleGrantedAuthority(groupOID));
             }
         }
         newAuthorities.add(SecurityRealm.AUTHENTICATED_AUTHORITY2);
         newAuthorities.add(new SimpleGrantedAuthority(objectID));
+        newAuthorities.add(new SimpleGrantedAuthority(userPrincipalName));
         this.authorities = newAuthorities;
     }
 
@@ -189,7 +189,7 @@ public final class AzureAdUser implements UserDetails {
 
     @Override
     public String getUsername() {
-        return getUniqueName();
+        return getObjectID();
     }
 
     @Override

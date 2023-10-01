@@ -6,7 +6,6 @@ import hudson.model.Item;
 import hudson.model.Job;
 import hudson.model.JobProperty;
 import hudson.model.JobPropertyDescriptor;
-import hudson.security.AuthorizationMatrixProperty;
 import hudson.security.Permission;
 import hudson.security.PermissionScope;
 import hudson.security.SecurityRealm;
@@ -14,12 +13,10 @@ import hudson.util.FormValidation;
 import jenkins.model.Jenkins;
 import net.sf.json.JSONObject;
 import org.jenkinsci.Symbol;
-import org.jenkinsci.plugins.matrixauth.AbstractAuthorizationPropertyConverter;
-import org.jenkinsci.plugins.matrixauth.AuthorizationProperty;
-import org.jenkinsci.plugins.matrixauth.AuthorizationPropertyDescriptor;
+import org.jenkinsci.plugins.matrixauth.inheritance.InheritGlobalStrategy;
+import org.jenkinsci.plugins.matrixauth.inheritance.InheritanceStrategy;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
-import org.kohsuke.accmod.restrictions.suppressions.SuppressRestrictedWarnings;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
@@ -39,60 +36,54 @@ public class AzureAdAuthorizationMatrixProperty extends AuthorizationMatrixPrope
         super(Collections.emptyList());
     }
 
-    public AzureAdAuthorizationMatrixProperty(Map<Permission, Set<String>> grantedPermissions) {
-        super(grantedPermissions);
+    public AzureAdAuthorizationMatrixProperty(
+            Map<Permission, Set<PermissionEntry>> grantedPermissions,
+            InheritanceStrategy inheritanceStrategy
+    ) {
+        super(grantedPermissions, new InheritGlobalStrategy());
         refreshMap();
     }
 
     @DataBoundConstructor
     @Restricted(NoExternalUse.class)
-    public AzureAdAuthorizationMatrixProperty(List<String> permissions) {
+    public AzureAdAuthorizationMatrixProperty(List<DslEntry> entries) {
         this();
-        for (String permission : permissions) {
-            add(permission);
-        }
+        setEntries(entries);
     }
 
     void refreshMap() {
-        for (String fullSid : this.getAllSIDs()) {
-            objId2FullSidMap.putFullSid(fullSid);
+        for (PermissionEntry entry : this.getAllPermissionEntries()) {
+            objId2FullSidMap.putFullSid(entry.getSid());
         }
         new AzureAdAuthorizationMatrixProperty();
     }
 
     @Override
-    public void add(Permission p, String sid) {
-        super.add(p, sid);
-        objId2FullSidMap.putFullSid(sid);
+    public void add(Permission p, PermissionEntry entry) {
+        super.add(p, entry);
+        objId2FullSidMap.putFullSid(entry.getSid());
     }
 
     @Override
-    public boolean hasExplicitPermission(String sid, Permission p) {
+    public boolean hasExplicitPermission(PermissionEntry entry, Permission p) {
         // Jenkins will pass in the object Id as sid
-        final String objectId = sid;
+        final String objectId = entry.getSid();
         if (objectId == null) {
             return false;
         }
-        return super.hasExplicitPermission(objId2FullSidMap.getOrOriginal(objectId), p);
-    }
 
-    @Override
-    public boolean hasPermission(String sid, Permission p) {
-        // Jenkins will pass in the object Id as sid
-        final String objectId = sid;
-        return super.hasPermission(objId2FullSidMap.getOrOriginal(objectId), p);
+        PermissionEntry entry1 = new PermissionEntry(entry.getType(), objId2FullSidMap.getOrOriginal(objectId));
+        return super.hasExplicitPermission(entry1, p);
     }
 
     @Override
     public boolean hasPermission(String sid, Permission p, boolean principal) {
         // Jenkins will pass in the object Id as sid
-        final String objectId = sid;
-        return super.hasPermission(objId2FullSidMap.getOrOriginal(objectId), p, principal);
+        return super.hasPermission(objId2FullSidMap.getOrOriginal(sid), p, principal);
     }
 
     @Extension
     @Symbol("azureAdAuthorizationMatrix")
-    @SuppressRestrictedWarnings(AuthorizationPropertyDescriptor.class)
     public static class DescriptorImpl extends JobPropertyDescriptor implements
             AuthorizationPropertyDescriptor<AzureAdAuthorizationMatrixProperty> {
 
@@ -143,7 +134,6 @@ public class AzureAdAuthorizationMatrixProperty extends AuthorizationMatrixPrope
         }
     }
 
-    @SuppressRestrictedWarnings(AbstractAuthorizationPropertyConverter.class)
     public static class ConverterImpl extends AbstractAuthorizationPropertyConverter {
 
         @Override

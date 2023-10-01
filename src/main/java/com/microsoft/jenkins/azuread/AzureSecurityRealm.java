@@ -19,13 +19,11 @@ import com.microsoft.graph.authentication.TokenCredentialAuthProvider;
 import com.microsoft.graph.http.GraphServiceException;
 import com.microsoft.graph.httpcore.HttpClients;
 import com.microsoft.graph.models.Group;
-import com.microsoft.graph.options.HeaderOption;
 import com.microsoft.graph.options.Option;
 import com.microsoft.graph.options.QueryOption;
 import com.microsoft.graph.requests.GraphServiceClient;
 import com.microsoft.graph.requests.GroupCollectionPage;
-import com.microsoft.jenkins.azuread.scribe.AzureApi;
-import com.microsoft.jenkins.azuread.scribe.AzureOAuthService;
+import com.microsoft.jenkins.azuread.scribe.AzureAdApi;
 import com.microsoft.jenkins.azuread.utils.UUIDValidator;
 import com.thoughtworks.xstream.converters.Converter;
 import com.thoughtworks.xstream.converters.MarshallingContext;
@@ -49,6 +47,9 @@ import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 import hudson.util.Secret;
 import io.jenkins.plugins.azuresdk.HttpClientRetriever;
+
+import javax.servlet.http.HttpSession;
+
 import jenkins.model.Jenkins;
 import jenkins.security.SecurityListener;
 import jenkins.util.JenkinsJVM;
@@ -83,6 +84,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.Proxy;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -98,7 +100,6 @@ import static com.microsoft.jenkins.azuread.AzureEnvironment.AZURE_PUBLIC_CLOUD;
 import static com.microsoft.jenkins.azuread.AzureEnvironment.AZURE_US_GOVERNMENT_L4;
 import static com.microsoft.jenkins.azuread.AzureEnvironment.AZURE_US_GOVERNMENT_L5;
 import static com.microsoft.jenkins.azuread.AzureEnvironment.getAuthorityHost;
-import static com.microsoft.jenkins.azuread.AzureEnvironment.getGraphResource;
 import static com.microsoft.jenkins.azuread.AzureEnvironment.getServiceRoot;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
@@ -110,7 +111,7 @@ public class AzureSecurityRealm extends SecurityRealm {
     private static final String TIMESTAMP_ATTRIBUTE = AzureSecurityRealm.class.getName() + ".beginTime";
     private static final String NONCE_ATTRIBUTE = AzureSecurityRealm.class.getName() + ".nonce";
     private static final Logger LOGGER = Logger.getLogger(AzureSecurityRealm.class.getName());
-    private static final int NONCE_LENGTH = 10;
+    private static final int NONCE_LENGTH = 16;
     public static final String CALLBACK_URL = "/securityRealm/finishLogin";
     private static final String CONVERTER_NODE_CLIENT_ID = "clientid";
     private static final String CONVERTER_NODE_CLIENT_SECRET = "clientsecret";
@@ -121,6 +122,7 @@ public class AzureSecurityRealm extends SecurityRealm {
     private static final int NOT_FOUND = 404;
     private static final int BAD_REQUEST = 400;
     public static final String CONVERTER_DISABLE_GRAPH_INTEGRATION = "disableGraphIntegration";
+    public static final String CONVERTER_SINGLE_LOGOUT = "singleLogout";
     public static final String CONVERTER_ENVIRONMENT_NAME = "environmentName";
 
     private Cache<String, AzureAdUser> caches;
@@ -133,31 +135,6 @@ public class AzureSecurityRealm extends SecurityRealm {
     private boolean singleLogout;
     private boolean disableGraphIntegration;
     private String azureEnvironmentName = "Azure";
-
-    private final transient Supplier<GraphServiceClient<Request>> cachedAzureClient = Suppliers.memoize(() -> {
-
-        String azureEnv = getAzureEnvironmentName();
-        final ClientSecretCredential clientSecretCredential = getClientSecretCredential();
-
-        final TokenCredentialAuthProvider authProvider = new TokenCredentialAuthProvider(clientSecretCredential);
-
-        OkHttpClient.Builder builder = HttpClients.createDefault(authProvider)
-                .newBuilder();
-
-        builder = addProxyToHttpClientIfRequired(builder);
-        final OkHttpClient graphHttpClient = builder.build();
-
-        GraphServiceClient<Request> graphServiceClient = GraphServiceClient
-                .builder()
-                .httpClient(graphHttpClient)
-                .buildClient();
-
-        if (!azureEnv.equals(AZURE_PUBLIC_CLOUD)) {
-            graphServiceClient.setServiceRoot(getServiceRoot(azureEnv));
-        }
-        return graphServiceClient;
-
-    });
 
     public AccessToken getAccessToken() {
         ClientSecretCredential clientSecretCredential = getClientSecretCredential();
@@ -174,7 +151,7 @@ public class AzureSecurityRealm extends SecurityRealm {
         return accessToken;
     }
 
-    private ClientSecretCredential getClientSecretCredential() {
+    ClientSecretCredential getClientSecretCredential() {
         String azureEnv = getAzureEnvironmentName();
         return new ClientSecretCredentialBuilder()
                 .clientId(clientId.getPlainText())
@@ -183,28 +160,6 @@ public class AzureSecurityRealm extends SecurityRealm {
                 .authorityHost(getAuthorityHost(azureEnv))
                 .httpClient(HttpClientRetriever.get())
                 .build();
-    }
-
-    public static OkHttpClient.Builder addProxyToHttpClientIfRequired(OkHttpClient.Builder builder) {
-        if (JenkinsJVM.isJenkinsJVM()) {
-            ProxyConfiguration proxyConfiguration = Jenkins.get().getProxy();
-            if (proxyConfiguration != null && StringUtils.isNotBlank(proxyConfiguration.getName())) {
-                Proxy proxy = proxyConfiguration.createProxy("graph.microsoft.com");
-
-                builder = builder.proxy(proxy);
-                if (StringUtils.isNotBlank(proxyConfiguration.getUserName())) {
-                    builder = builder.proxyAuthenticator((route, response) -> {
-                        String credential = Credentials.basic(
-                                proxyConfiguration.getUserName(),
-                                proxyConfiguration.getSecretPassword().getPlainText()
-                        );
-                        return response.request().newBuilder().header("Authorization", credential).build();
-                    });
-                }
-            }
-        }
-
-        return builder;
     }
 
 
@@ -234,9 +189,9 @@ public class AzureSecurityRealm extends SecurityRealm {
 
     String getCredentialCacheKey() {
         return Util.getDigestOf(clientId.getPlainText()
-                        + clientSecret.getPlainText()
-                        + tenant.getPlainText()
-                        + azureEnvironmentName
+                + clientSecret.getPlainText()
+                + tenant.getPlainText()
+                + azureEnvironmentName
         );
     }
 
@@ -311,19 +266,17 @@ public class AzureSecurityRealm extends SecurityRealm {
         return jwtConsumer.get();
     }
 
-    AzureOAuthService getOAuthService() {
-        return (AzureOAuthService) new ServiceBuilder(clientId.getPlainText())
+    OAuth20Service getOAuthService() {
+        return new ServiceBuilder(clientId.getPlainText())
                 .apiSecret(clientSecret.getPlainText())
                 .responseType("id_token")
-                .scope("openid profile email")
+                .defaultScope("openid profile email")
                 .callback(getRootUrl() + CALLBACK_URL)
-                .build(AzureApi.instance(getGraphResource(getAzureEnvironmentName()),
-                        this.getTenant(),
-                        getAuthorityHost(getAzureEnvironmentName())));
+                .build(AzureAdApi.custom(getTenant(), getAuthorityHost(getAzureEnvironmentName())));
     }
 
     GraphServiceClient<Request> getAzureClient() {
-        return cachedAzureClient.get();
+        return GraphClientCache.getClient(this);
     }
 
 
@@ -352,7 +305,9 @@ public class AzureSecurityRealm extends SecurityRealm {
 
     @SuppressWarnings("unused") // used by stapler
     public HttpResponse doCommenceLogin(StaplerRequest request, @Header("Referer") final String referer) {
-        request.getSession().setAttribute(REFERER_ATTRIBUTE, referer);
+        String trimmedReferrer = getReferer(referer);
+
+        request.getSession().setAttribute(REFERER_ATTRIBUTE, trimmedReferrer);
         OAuth20Service service = getOAuthService();
         request.getSession().setAttribute(TIMESTAMP_ATTRIBUTE, System.currentTimeMillis());
         String nonce = RandomStringUtils.randomAlphanumeric(NONCE_LENGTH);
@@ -365,14 +320,42 @@ public class AzureSecurityRealm extends SecurityRealm {
         return new HttpRedirect(service.getAuthorizationUrl(additionalParams));
     }
 
+    /**
+     * Logged out page shows a login button which just sends you back to the logged out page
+     * which is a bit silly, so we override it to send you to the root page.
+     */
+    private static String getReferer(String referer) {
+        String trimmedReferrer = referer;
+        if (referer != null && referer.endsWith("azureAdLogout/")) {
+            trimmedReferrer = referer.replace("azureAdLogout/", "");
+        }
+        return trimmedReferrer;
+    }
+
+    /**
+     * Check if a request contains a session, if so, invalidate the session and create a new one to avoid session
+     * fixation.
+     */
+    private void recreateSession(StaplerRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            session.invalidate();
+        }
+        request.getSession(true);
+    }
+
+
     public HttpResponse doFinishLogin(StaplerRequest request)
             throws InvalidJwtException, IOException {
+        String referer = (String) request.getSession().getAttribute(REFERER_ATTRIBUTE);
         try {
             final Long beginTime = (Long) request.getSession().getAttribute(TIMESTAMP_ATTRIBUTE);
             final String expectedNonce = (String) request.getSession().getAttribute(NONCE_ATTRIBUTE);
+
+            recreateSession(request);
+
             if (expectedNonce == null) {
                 // no nonce, probably some issue with an old session, force the user to re-auth
-                request.getSession().invalidate();
                 return HttpResponses.redirectToContextRoot();
             }
 
@@ -386,12 +369,11 @@ public class AzureSecurityRealm extends SecurityRealm {
             if (StringUtils.isBlank(idToken)) {
                 LOGGER.info("No `id_token` found ensure you have enabled it on the 'Authentication' page of the "
                         + "app registration");
-                request.getSession().invalidate();
                 return HttpResponses.redirectToContextRoot();
             }
             // validate the nonce to avoid CSRF
             final JwtClaims claims = validateIdToken(expectedNonce, idToken);
-            String key = (String) claims.getClaimValue("preferred_username");
+            String key = (String) claims.getClaimValue("oid");
 
             AzureAdUser userDetails = caches.get(key, (cacheKey) -> {
                 final AzureAdUser user;
@@ -402,7 +384,7 @@ public class AzureSecurityRealm extends SecurityRealm {
                     groups = AzureCachePool.get(getAzureClient())
                             .getBelongingGroupsByOid(user.getObjectID());
                 }
-                user.setAuthorities(groups);
+                user.setAuthorities(groups, user.getUniqueName());
                 LOGGER.info(String.format("Fetch user details with sub: %s***",
                         key.substring(0, CACHE_KEY_LOG_LENGTH)));
                 return user;
@@ -416,32 +398,14 @@ public class AzureSecurityRealm extends SecurityRealm {
 
             // Enforce updating current identity
             SecurityContextHolder.getContext().setAuthentication(auth);
-            User u = User.current();
-            if (u != null) {
-                String description = generateDescription(auth);
-                u.setDescription(description);
-                u.setFullName(auth.getAzureAdUser().getName());
-                if (StringUtils.isNotBlank(auth.getAzureAdUser().getEmail())) {
-                    UserProperty existing = u.getProperty(UserProperty.class);
-                    if (existing == null || !existing.hasExplicitlyConfiguredAddress()) {
-                        u.addProperty(new Mailer.UserProperty(auth.getAzureAdUser().getEmail()));
-                    }
-                }
-            }
-
+            updateIdentity(auth.getAzureAdUser(), User.current());
 
             SecurityListener.fireAuthenticated2(userDetails);
         } catch (Exception ex) {
             LOGGER.log(Level.SEVERE, "error", ex);
             throw ex;
-        } finally {
-            if (request.isRequestedSessionIdValid()) {
-                request.getSession().removeAttribute(NONCE_ATTRIBUTE);
-            }
         }
 
-        // redirect to referer
-        String referer = (String) request.getSession().getAttribute(REFERER_ATTRIBUTE);
         if (referer != null) {
             return HttpResponses.redirectTo(referer);
         } else {
@@ -452,7 +416,12 @@ public class AzureSecurityRealm extends SecurityRealm {
     JwtClaims validateIdToken(String expectedNonce, String idToken) throws InvalidJwtException {
         JwtClaims claims = getJwtConsumer().processToClaims(idToken);
         final String responseNonce = (String) claims.getClaimValue("nonce");
-        if (StringUtils.isAnyEmpty(expectedNonce, responseNonce) || !expectedNonce.equals(responseNonce)) {
+        if (StringUtils.isAnyEmpty(expectedNonce, responseNonce) ||
+                !MessageDigest.isEqual(
+                        expectedNonce.getBytes(StandardCharsets.UTF_8),
+                        responseNonce.getBytes(StandardCharsets.UTF_8)
+                )
+        ) {
             throw new IllegalStateException(String.format("Invalid nonce in the response, "
                     + "expected: %s actual: %s", expectedNonce, responseNonce));
         }
@@ -469,7 +438,7 @@ public class AzureSecurityRealm extends SecurityRealm {
         // Ensure single sign-out
 
         if (singleLogout) {
-            return getOAuthService().getLogoutUrl();
+            return ((AzureAdApi) getOAuthService().getApi()).getLogoutUrl();
         }
         return req.getContextPath() + "/" + AzureAdLogoutAction.POST_LOGOUT_URL;
     }
@@ -501,6 +470,7 @@ public class AzureSecurityRealm extends SecurityRealm {
                 // Currently triggers annoying log spam if the user is a group, but there's no way to tell currently
                 // as we look up by object id we don't know if it's a user or a group :(
                 try {
+                    // TODO try https://docs.microsoft.com/en-us/answers/questions/42697/how-to-get-a-particular-azure-ad-guest-user-from-h.html
                     com.microsoft.graph.models.User activeDirectoryUser = azureClient.users(userId).buildRequest()
                             .get();
 
@@ -513,7 +483,11 @@ public class AzureSecurityRealm extends SecurityRealm {
                     List<AzureAdGroup> groups = AzureCachePool.get(azureClient)
                             .getBelongingGroupsByOid(user.getObjectID());
 
-                    user.setAuthorities(groups);
+                    user.setAuthorities(groups, user.getUniqueName());
+
+                    // Enforce updating added identity
+                    updateIdentity(user, User.getById(user.getObjectID(), true));
+
                     return user;
                 } catch (GraphServiceException e) {
                     if (e.getResponseCode() == NOT_FOUND) {
@@ -553,7 +527,7 @@ public class AzureSecurityRealm extends SecurityRealm {
         String groupId = ObjId2FullSidMap.extractObjectId(groupName);
 
         if (groupId == null) {
-            // just an object id on it's own?
+            // just an object id on its own?
             groupId = groupName;
         }
 
@@ -584,10 +558,9 @@ public class AzureSecurityRealm extends SecurityRealm {
             LOGGER.log(Level.WARNING, "Failed to url encode query, group name was: " + groupName);
         }
 
-        String query = String.format("\"displayName:%s\"", encodedGroupName);
+        String query = String.format("displayName eq '%s'", encodedGroupName);
 
-        requestOptions.add(new QueryOption("$search", query));
-        requestOptions.add(new HeaderOption("ConsistencyLevel", "eventual"));
+        requestOptions.add(new QueryOption("$filter", query));
 
         GroupCollectionPage groupCollectionPage = getAzureClient().groups()
                 .buildRequest(requestOptions)
@@ -605,7 +578,7 @@ public class AzureSecurityRealm extends SecurityRealm {
             throw new UsernameNotFoundException("Multiple matches found for group display name, "
                     + "this must be unique: " + groupIds);
         } else if (currentPage.size() == 1) {
-             group = currentPage.get(0);
+            group = currentPage.get(0);
         }
         return group;
     }
@@ -658,6 +631,10 @@ public class AzureSecurityRealm extends SecurityRealm {
             writer.startNode(CONVERTER_DISABLE_GRAPH_INTEGRATION);
             writer.setValue(String.valueOf(realm.isDisableGraphIntegration()));
             writer.endNode();
+
+            writer.startNode(CONVERTER_SINGLE_LOGOUT);
+            writer.setValue(String.valueOf(realm.isSingleLogout()));
+            writer.endNode();
         }
 
         @Override
@@ -688,6 +665,9 @@ public class AzureSecurityRealm extends SecurityRealm {
                         break;
                     case CONVERTER_DISABLE_GRAPH_INTEGRATION:
                         realm.setDisableGraphIntegration(Boolean.parseBoolean(value));
+                        break;
+                    case CONVERTER_SINGLE_LOGOUT:
+                        realm.setSingleLogout(Boolean.parseBoolean(value));
                         break;
                     default:
                         break;
@@ -756,26 +736,14 @@ public class AzureSecurityRealm extends SecurityRealm {
                 return FormValidation.error("Please set a test user principal name or object ID");
             }
 
-            final ClientSecretCredential clientSecretCredential = new ClientSecretCredentialBuilder()
-                    .clientId(clientId)
-                    .clientSecret(clientSecret.getPlainText())
-                    .tenantId(tenant)
-                    .httpClient(HttpClientRetriever.get())
-                    .authorityHost(getAuthorityHost(azureEnvironmentName))
-                    .build();
-
-            final TokenCredentialAuthProvider authProvider = new TokenCredentialAuthProvider(clientSecretCredential);
-
-            OkHttpClient.Builder builder = HttpClients.createDefault(authProvider)
-                    .newBuilder();
-
-            builder = addProxyToHttpClientIfRequired(builder);
-            OkHttpClient httpClient = builder.build();
-
-            GraphServiceClient<Request> graphServiceClient = GraphServiceClient
-                    .builder()
-                    .httpClient(httpClient)
-                    .buildClient();
+            GraphServiceClient<Request> graphServiceClient = GraphClientCache.getClient(
+                    new GraphClientCacheKey(
+                            clientId,
+                            Secret.toString(clientSecret),
+                            tenant,
+                            azureEnvironmentName
+                    )
+            );
             try {
                 com.microsoft.graph.models.User user = graphServiceClient.users(testObject).buildRequest().get();
 
@@ -786,17 +754,30 @@ public class AzureSecurityRealm extends SecurityRealm {
         }
     }
 
-    private String generateDescription(Authentication auth) {
-        if (auth instanceof AzureAuthenticationToken) {
-            AzureAdUser user = ((AzureAuthenticationToken) auth).getAzureAdUser();
-            return "Azure Active Directory User\n"
-                    + "\nUnique Principal Name: " + user.getUniqueName()
-                    + "\nEmail: " + user.getEmail()
-                    + "\nObject ID: " + user.getObjectID()
-                    + "\nTenant ID: " + user.getTenantID()
-                    + "\nGroups: " + user.getGroupOIDs() + "\n";
+    private void updateIdentity(final AzureAdUser azureAdUser, final User u) {
+        if (azureAdUser != null && u != null) {
+            try {
+                String description = generateDescription(azureAdUser);
+                u.setDescription(description);
+                u.setFullName(azureAdUser.getName());
+                if (StringUtils.isNotBlank(azureAdUser.getEmail())) {
+                    UserProperty existing = u.getProperty(UserProperty.class);
+                    if (existing == null || !existing.hasExplicitlyConfiguredAddress()) {
+                            u.addProperty(new Mailer.UserProperty(azureAdUser.getEmail()));
+                    }
+                }
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to update user mail with userid: " + azureAdUser.getObjectID(), e);
+            }
         }
-        return "";
+    }
+
+    private String generateDescription(AzureAdUser user) {
+        return "Azure Active Directory User\n"
+                + "\nUnique Principal Name: " + user.getUniqueName()
+                + "\nEmail: " + user.getEmail()
+                + "\nObject ID: " + user.getObjectID()
+                + "\nTenant ID: " + user.getTenantID();
     }
 
 }
